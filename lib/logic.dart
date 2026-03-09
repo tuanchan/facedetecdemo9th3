@@ -6,15 +6,12 @@ import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:http/http.dart' as http;
-import 'package:audioplayers/audioplayers.dart';
-import 'app.dart';
 
 // ─────────────────────────────────────────────
-// ENUMS & DATA MODELS
+// ENUMS & MODELS
 // ─────────────────────────────────────────────
 
 enum StatusType { muted, success, error, warn }
-
 enum BadgeMode { normal, ok, warn }
 
 class BadgeInfo {
@@ -29,7 +26,6 @@ class AttendanceResult {
   final String studentName;
   final String studentCode;
   final double? score;
-
   const AttendanceResult({
     required this.message,
     required this.ok,
@@ -37,26 +33,165 @@ class AttendanceResult {
     required this.studentCode,
     this.score,
   });
-
-  factory AttendanceResult.fromJson(Map<String, dynamic> json) {
-    final student = json['student'] as Map<String, dynamic>?;
-    final pythonResult = json['pythonResult'] as Map<String, dynamic>?;
-    final match = pythonResult?['match'] as Map<String, dynamic>?;
+  factory AttendanceResult.fromJson(Map<String, dynamic> j) {
+    final student = j['student'] as Map<String, dynamic>?;
+    final py = j['pythonResult'] as Map<String, dynamic>?;
+    final match = py?['match'] as Map<String, dynamic>?;
     return AttendanceResult(
-      message: json['message']?.toString() ?? '—',
-      ok: json['ok'] == true,
-      studentName: student?['studentName']?.toString() ?? '—',
-      studentCode: student?['studentCode']?.toString() ?? '—',
+      message: (j['message'] ?? '—').toString(),
+      ok: j['ok'] == true,
+      studentName: (student?['studentName'] ?? '—').toString(),
+      studentCode: (student?['studentCode'] ?? '—').toString(),
       score: (match?['score'] as num?)?.toDouble(),
     );
   }
 }
 
-class _FaceBox {
+// Normalized face box (0.0–1.0 của ảnh gốc)
+class FaceBox {
   final double left, top, width, height;
-  const _FaceBox(this.left, this.top, this.width, this.height);
-  double get centerX => left + width / 2;
-  double get centerY => top + height / 2;
+  const FaceBox(this.left, this.top, this.width, this.height);
+  double get cx => left + width / 2;
+  double get cy => top + height / 2;
+}
+
+class FaceEval {
+  final bool sizeOk, zoneOk, motionOk;
+  final double widthRatio;
+  bool get allOk => sizeOk && zoneOk && motionOk;
+  const FaceEval({required this.sizeOk, required this.zoneOk, required this.motionOk, required this.widthRatio});
+}
+
+// ─────────────────────────────────────────────
+// GUIDE BOX PAINTER
+// Vẽ khung hướng dẫn + góc + bounding box mặt
+// ─────────────────────────────────────────────
+
+class GuideBoxPainter extends CustomPainter {
+  final List<FaceBox> faces;
+  final bool faceOk;
+  final bool multipleFaces;
+
+  const GuideBoxPainter({
+    required this.faces,
+    required this.faceOk,
+    required this.multipleFaces,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final w = size.width;
+    final h = size.height;
+
+    // Guide box: 52% x 62% ở giữa (giống HTML gốc)
+    final gw = w * 0.52;
+    final gh = h * 0.62;
+    final gx = (w - gw) / 2;
+    final gy = (h - gh) / 2;
+
+    // Dim vùng ngoài guide
+    final dimPaint = Paint()..color = Colors.black.withOpacity(0.32);
+    canvas.drawRect(Rect.fromLTWH(0, 0, w, gy), dimPaint);
+    canvas.drawRect(Rect.fromLTWH(0, gy + gh, w, h - gy - gh), dimPaint);
+    canvas.drawRect(Rect.fromLTWH(0, gy, gx, gh), dimPaint);
+    canvas.drawRect(Rect.fromLTWH(gx + gw, gy, w - gx - gw, gh), dimPaint);
+
+    // Viền mờ guide box
+    canvas.drawRect(
+      Rect.fromLTWH(gx, gy, gw, gh),
+      Paint()
+        ..color = Colors.white.withOpacity(0.35)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1,
+    );
+
+    // Corner color: xanh = ok, đỏ = nhiều mặt, trắng = chưa ok
+    final cornerColor = multipleFaces
+        ? const Color(0xFFEF4444)
+        : faceOk
+            ? const Color(0xFF22C55E)
+            : Colors.white;
+    final cp = Paint()
+      ..color = cornerColor
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3.5
+      ..strokeCap = StrokeCap.round;
+
+    const c = 24.0;
+    // Top-left
+    _corner(canvas, cp, gx, gy, c, c);
+    // Top-right
+    _corner(canvas, cp, gx + gw, gy, -c, c);
+    // Bottom-left
+    _corner(canvas, cp, gx, gy + gh, c, -c);
+    // Bottom-right
+    _corner(canvas, cp, gx + gw, gy + gh, -c, -c);
+
+    // Face bounding boxes
+    for (final face in faces) {
+      final fx = face.left * w;
+      final fy = face.top * h;
+      final fw = face.width * w;
+      final fh = face.height * h;
+      canvas.drawRect(
+        Rect.fromLTWH(fx, fy, fw, fh),
+        Paint()
+          ..color = multipleFaces
+              ? const Color(0xFFEF4444)
+              : faceOk
+                  ? const Color(0xFF22C55E)
+                  : Colors.white
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2,
+      );
+    }
+  }
+
+  void _corner(Canvas canvas, Paint p, double x, double y, double dx, double dy) {
+    canvas.drawPath(
+      Path()
+        ..moveTo(x, y + dy)
+        ..lineTo(x, y)
+        ..lineTo(x + dx, y),
+      p,
+    );
+  }
+
+  @override
+  bool shouldRepaint(GuideBoxPainter old) =>
+      old.faceOk != faceOk ||
+      old.multipleFaces != multipleFaces ||
+      old.faces.length != faces.length;
+}
+
+// ─────────────────────────────────────────────
+// APP CONFIG
+// ─────────────────────────────────────────────
+
+class AppConfig {
+  String apiUrl;
+  int moduleSessionId;
+  double thresh;
+  int holdMs;
+  int cooldownMs;
+  double minFaceWidthRatio;
+  double maxFaceWidthRatio;
+  double centerToleranceX;
+  double centerToleranceY;
+  double maxMovePx;
+
+  AppConfig({
+    this.apiUrl = 'https://your-api.example.com/api/FaceAttendance/checkin-image',
+    this.moduleSessionId = 1,
+    this.thresh = 0.36,
+    this.holdMs = 1200,
+    this.cooldownMs = 4000,
+    this.minFaceWidthRatio = 0.20,
+    this.maxFaceWidthRatio = 0.72,
+    this.centerToleranceX = 0.18,
+    this.centerToleranceY = 0.22,
+    this.maxMovePx = 18,
+  });
 }
 
 // ─────────────────────────────────────────────
@@ -64,172 +199,141 @@ class _FaceBox {
 // ─────────────────────────────────────────────
 
 class FaceAttendanceLogic {
-  // Callbacks to UI
-  void Function(String text, StatusType type)? onStatusUpdate;
-  void Function(double progress)? onProgressUpdate;
-  void Function(BadgeInfo face, BadgeInfo size, BadgeInfo zone, BadgeInfo stable)? onBadgesUpdate;
-  void Function(AttendanceResult result)? onResult;
-  void Function(String name)? onSuccess;
-  void Function(bool running)? onCameraStateChange;
+  void Function(String, StatusType)? onStatusUpdate;
+  void Function(double)? onProgressUpdate;
+  void Function(BadgeInfo, BadgeInfo, BadgeInfo, BadgeInfo)? onBadgesUpdate;
+  void Function(AttendanceResult)? onResult;
+  void Function(String)? onSuccess;
+  void Function(bool)? onCameraStateChange;
+  void Function(List<FaceBox>, bool faceOk, bool multi)? onFacesUpdate;
+  void Function(Uint8List)? onThumbUpdate;
 
-  // Camera & detection
-  CameraController? _cameraController;
-  FaceDetector? _faceDetector;
-  bool _isDetecting = false;
-  bool _isSending = false;
-  bool _isCameraRunning = false;
-
-  // Timing state
-  DateTime? _stableStartAt;
+  CameraController? _cam;
+  FaceDetector? _detector;
+  bool _detecting = false;
+  bool _sending = false;
+  bool _running = false;
+  DateTime? _stableStart;
   DateTime? _cooldownUntil;
-  _FaceBox? _lastGoodBox;
-  Uint8List? _lastCapturedBytes;
+  FaceBox? _lastGoodBox;
 
-  // Audio
-  final AudioPlayer _audioPlayer = AudioPlayer();
+  CameraController? get cameraController => _cam;
 
-  Uint8List? get lastCapturedImageBytes => _lastCapturedBytes;
-
-  // ─── Start everything ───
-  Future<void> startAll(AppConfig config) async {
+  // ── Start ──
+  Future<void> startAll(AppConfig cfg) async {
+    _setStatus('Đang khởi tạo camera...', StatusType.muted);
     try {
-      _setStatus('Đang khởi tạo camera...', StatusType.muted);
       await _initCamera();
-      await _initFaceDetector();
-      _isCameraRunning = true;
+      _initDetector();
+      _running = true;
       onCameraStateChange?.call(true);
       _setStatus('Camera đang chạy — đưa mặt vào khung', StatusType.success);
-      _startDetectionLoop(config);
+      _startStream(cfg);
     } catch (e) {
-      _setStatus('Không khởi động được: $e', StatusType.error);
+      _setStatus('Lỗi khởi tạo: $e', StatusType.error);
     }
   }
 
-  // ─── Stop everything ───
+  // ── Stop ──
   void stopAll() {
-    _isCameraRunning = false;
-    _isDetecting = false;
-    _stableStartAt = null;
+    _running = false;
+    _detecting = false;
+    _stableStart = null;
     _lastGoodBox = null;
-    _cameraController?.stopImageStream();
-    _cameraController?.dispose();
-    _cameraController = null;
-    _faceDetector?.close();
-    _faceDetector = null;
+    try { _cam?.stopImageStream(); } catch (_) {}
+    _cam?.dispose();
+    _cam = null;
+    _detector?.close();
+    _detector = null;
     onCameraStateChange?.call(false);
     onProgressUpdate?.call(0);
+    onFacesUpdate?.call([], false, false);
     _resetBadges();
     _setStatus('Đã tắt camera', StatusType.muted);
   }
 
-  // ─── Manual capture ───
-  Future<void> manualCapture(AppConfig config) async {
-    if (_cameraController == null || !_isCameraRunning) {
+  // ── Manual capture ──
+  Future<void> manualCapture(AppConfig cfg) async {
+    if (_cam == null || !_running) {
       _setStatus('Hãy mở camera trước', StatusType.error);
       return;
     }
-    await _captureAndSend(config, reason: 'manual');
+    await _captureAndSend(cfg, manual: true);
   }
 
-  // ─── Camera preview widget ───
-  Widget? cameraPreviewWidget(BuildContext context) {
-    if (_cameraController == null || !_cameraController!.value.isInitialized) return null;
-    return CameraPreview(_cameraController!);
-  }
-
-  // ─── Init camera ───
   Future<void> _initCamera() async {
-    final cameras = await availableCameras();
-    if (cameras.isEmpty) throw Exception('Không tìm thấy camera');
-
-    // Prefer front camera
-    final camera = cameras.firstWhere(
+    final cams = await availableCameras();
+    if (cams.isEmpty) throw Exception('Không tìm thấy camera');
+    final cam = cams.firstWhere(
       (c) => c.lensDirection == CameraLensDirection.front,
-      orElse: () => cameras.first,
+      orElse: () => cams.first,
     );
-
-    _cameraController?.dispose();
-    _cameraController = CameraController(
-      camera,
-      ResolutionPreset.high,
-      enableAudio: false,
-      imageFormatGroup: ImageFormatGroup.jpeg,
-    );
-    await _cameraController!.initialize();
+    _cam?.dispose();
+    _cam = CameraController(cam, ResolutionPreset.high, enableAudio: false);
+    await _cam!.initialize();
   }
 
-  // ─── Init face detector ───
-  Future<void> _initFaceDetector() async {
-    _faceDetector?.close();
-    _faceDetector = FaceDetector(
+  void _initDetector() {
+    _detector?.close();
+    _detector = FaceDetector(
       options: FaceDetectorOptions(
-        enableClassification: false,
-        enableLandmarks: false,
-        enableContours: false,
-        enableTracking: false,
-        minFaceSize: 0.15,
         performanceMode: FaceDetectorMode.fast,
+        minFaceSize: 0.10,
       ),
     );
   }
 
-  // ─── Detection loop ───
-  void _startDetectionLoop(AppConfig config) {
-    _cameraController?.startImageStream((CameraImage image) async {
-      if (_isDetecting || !_isCameraRunning) return;
-      _isDetecting = true;
+  void _startStream(AppConfig cfg) {
+    _cam?.startImageStream((CameraImage img) async {
+      if (_detecting || !_running) return;
+      _detecting = true;
       try {
-        await _processFrame(image, config);
-      } catch (_) {} finally {
-        _isDetecting = false;
+        await _processFrame(img, cfg);
+      } catch (_) {
+      } finally {
+        _detecting = false;
       }
     });
   }
 
-  Future<void> _processFrame(CameraImage image, AppConfig config) async {
-    if (_faceDetector == null || _cameraController == null) return;
+  Future<void> _processFrame(CameraImage img, AppConfig cfg) async {
+    if (_detector == null || _cam == null) return;
+    final input = _buildInput(img);
+    if (input == null) return;
 
-    final inputImage = _buildInputImage(image);
-    if (inputImage == null) return;
-
-    final faces = await _faceDetector!.processImage(inputImage);
-
+    final faces = await _detector!.processImage(input);
     final inCooldown = _cooldownUntil != null && DateTime.now().isBefore(_cooldownUntil!);
-
-    if (inCooldown) {
-      _setStatus('Cooldown — chờ lần tiếp theo...', StatusType.muted);
-    }
+    if (inCooldown) _setStatus('Cooldown — chờ lần tiếp theo...', StatusType.muted);
 
     if (faces.length == 1) {
-      final face = faces.first;
-      final box = _faceBox(face, image);
-      final check = _evaluateFace(box, image, config);
-
+      final box = _norm(faces.first, img);
+      final ev = _eval(box, cfg);
+      onFacesUpdate?.call([box], ev.allOk, false);
       onBadgesUpdate?.call(
         const BadgeInfo('1 khuôn mặt', BadgeMode.ok),
         BadgeInfo(
-          check.sizeOk ? 'Khoảng cách OK (${(check.widthRatio * 100).toStringAsFixed(0)}%)' : 'Khoảng cách chưa đạt (${(check.widthRatio * 100).toStringAsFixed(0)}%)',
-          check.sizeOk ? BadgeMode.ok : BadgeMode.warn,
+          ev.sizeOk
+              ? 'Khoảng cách OK (${(ev.widthRatio * 100).toStringAsFixed(0)}%)'
+              : 'Khoảng cách chưa đạt (${(ev.widthRatio * 100).toStringAsFixed(0)}%)',
+          ev.sizeOk ? BadgeMode.ok : BadgeMode.warn,
         ),
-        BadgeInfo(check.zoneOk ? 'Đúng vị trí' : 'Chưa vào khung', check.zoneOk ? BadgeMode.ok : BadgeMode.warn),
-        BadgeInfo(check.motionOk ? 'Ổn định' : 'Đang rung', check.motionOk ? BadgeMode.ok : BadgeMode.warn),
+        BadgeInfo(ev.zoneOk ? 'Đúng vị trí' : 'Chưa vào khung', ev.zoneOk ? BadgeMode.ok : BadgeMode.warn),
+        BadgeInfo(ev.motionOk ? 'Ổn định' : 'Đang rung', ev.motionOk ? BadgeMode.ok : BadgeMode.warn),
       );
-
-      if (check.allOk) {
+      if (ev.allOk) {
         _lastGoodBox = box;
         if (!inCooldown) _setStatus('Giữ yên thêm chút...', StatusType.success);
-        final ready = _updateHoldProgress(true, config.holdMs);
-        if (ready && !inCooldown && !_isSending) {
-          await _captureAndSend(config);
-        }
+        final ready = _updateProgress(true, cfg.holdMs);
+        if (ready && !inCooldown && !_sending) await _captureAndSend(cfg);
       } else {
         _lastGoodBox = null;
-        _updateHoldProgress(false, config.holdMs);
+        _updateProgress(false, cfg.holdMs);
         if (!inCooldown) _setStatus('Đưa mặt vào đúng vị trí', StatusType.muted);
       }
     } else if (faces.length > 1) {
       _lastGoodBox = null;
-      _updateHoldProgress(false, config.holdMs);
+      _updateProgress(false, cfg.holdMs);
+      onFacesUpdate?.call(faces.map((f) => _norm(f, img)).toList(), false, true);
       onBadgesUpdate?.call(
         BadgeInfo('${faces.length} khuôn mặt', BadgeMode.warn),
         const BadgeInfo('—', BadgeMode.normal),
@@ -239,29 +343,25 @@ class FaceAttendanceLogic {
       _setStatus('Chỉ chấp nhận 1 người trong khung', StatusType.error);
     } else {
       _lastGoodBox = null;
-      _updateHoldProgress(false, config.holdMs);
+      _updateProgress(false, cfg.holdMs);
+      onFacesUpdate?.call([], false, false);
       _resetBadges();
       if (!inCooldown) _setStatus('Đưa mặt vào khung giữa', StatusType.muted);
     }
   }
 
-  InputImage? _buildInputImage(CameraImage image) {
+  InputImage? _buildInput(CameraImage img) {
     try {
-      final camera = _cameraController!.description;
-      final rotation = InputImageRotationValue.fromRawValue(camera.sensorOrientation);
-      if (rotation == null) return null;
-
-      final format = InputImageFormatValue.fromRawValue(image.format.raw);
-      if (format == null) return null;
-
-      final plane = image.planes.first;
+      final rot = InputImageRotationValue.fromRawValue(_cam!.description.sensorOrientation);
+      final fmt = InputImageFormatValue.fromRawValue(img.format.raw);
+      if (rot == null || fmt == null) return null;
       return InputImage.fromBytes(
-        bytes: plane.bytes,
+        bytes: img.planes.first.bytes,
         metadata: InputImageMetadata(
-          size: Size(image.width.toDouble(), image.height.toDouble()),
-          rotation: rotation,
-          format: format,
-          bytesPerRow: plane.bytesPerRow,
+          size: Size(img.width.toDouble(), img.height.toDouble()),
+          rotation: rot,
+          format: fmt,
+          bytesPerRow: img.planes.first.bytesPerRow,
         ),
       );
     } catch (_) {
@@ -269,140 +369,92 @@ class FaceAttendanceLogic {
     }
   }
 
-  _FaceBox _faceBox(Face face, CameraImage image) {
-    final r = face.boundingBox;
-    return _FaceBox(
-      r.left / image.width,
-      r.top / image.height,
-      r.width / image.width,
-      r.height / image.height,
-    );
-  }
+  FaceBox _norm(Face f, CameraImage img) => FaceBox(
+        f.boundingBox.left / img.width,
+        f.boundingBox.top / img.height,
+        f.boundingBox.width / img.width,
+        f.boundingBox.height / img.height,
+      );
 
-  ({bool sizeOk, bool zoneOk, bool motionOk, bool allOk, double widthRatio}) _evaluateFace(
-    _FaceBox box, CameraImage image, AppConfig config) {
-    final sizeOk = box.width >= config.minFaceWidthRatio && box.width <= config.maxFaceWidthRatio;
-    final zoneOk = (box.centerX - 0.5).abs() <= config.centerToleranceX &&
-        (box.centerY - 0.5).abs() <= config.centerToleranceY;
+  FaceEval _eval(FaceBox box, AppConfig cfg) {
+    final sizeOk = box.width >= cfg.minFaceWidthRatio && box.width <= cfg.maxFaceWidthRatio;
+    final zoneOk = (box.cx - 0.5).abs() <= cfg.centerToleranceX &&
+        (box.cy - 0.5).abs() <= cfg.centerToleranceY;
     bool motionOk = true;
     if (_lastGoodBox != null) {
-      final dx = (box.centerX - _lastGoodBox!.centerX) * image.width;
-      final dy = (box.centerY - _lastGoodBox!.centerY) * image.height;
-      motionOk = sqrt(dx * dx + dy * dy) <= config.maxMovePx;
+      final dist = sqrt(pow(box.cx - _lastGoodBox!.cx, 2) + pow(box.cy - _lastGoodBox!.cy, 2)) * 400;
+      motionOk = dist <= cfg.maxMovePx;
     }
-    return (
-      sizeOk: sizeOk,
-      zoneOk: zoneOk,
-      motionOk: motionOk,
-      allOk: sizeOk && zoneOk && motionOk,
-      widthRatio: box.width,
-    );
+    return FaceEval(sizeOk: sizeOk, zoneOk: zoneOk, motionOk: motionOk, widthRatio: box.width);
   }
 
-  bool _updateHoldProgress(bool isGood, int holdMs) {
-    if (isGood) {
-      _stableStartAt ??= DateTime.now();
-      final elapsed = DateTime.now().difference(_stableStartAt!).inMilliseconds;
-      final pct = (elapsed / holdMs).clamp(0.0, 1.0);
-      onProgressUpdate?.call(pct);
-      return elapsed >= holdMs;
-    } else {
-      _stableStartAt = null;
-      onProgressUpdate?.call(0);
-      return false;
+  bool _updateProgress(bool good, int holdMs) {
+    if (good) {
+      _stableStart ??= DateTime.now();
+      final ms = DateTime.now().difference(_stableStart!).inMilliseconds;
+      onProgressUpdate?.call((ms / holdMs).clamp(0.0, 1.0));
+      return ms >= holdMs;
     }
+    _stableStart = null;
+    onProgressUpdate?.call(0);
+    return false;
   }
 
-  // ─── Capture & send ───
-  Future<void> _captureAndSend(AppConfig config, {String reason = 'auto'}) async {
-    if (_isSending) return;
-    _isSending = true;
+  Future<void> _captureAndSend(AppConfig cfg, {bool manual = false}) async {
+    if (_sending || _cam == null) return;
+    _sending = true;
     try {
-      _setStatus(reason == 'manual' ? 'Đang chụp thủ công...' : 'Đủ điều kiện, đang tự chụp...', StatusType.warn);
-
-      // Capture frame
-      final xFile = await _cameraController!.takePicture();
-      final bytes = await xFile.readAsBytes();
-      _lastCapturedBytes = bytes;
+      _setStatus(manual ? 'Đang chụp thủ công...' : 'Đủ điều kiện, đang tự chụp...', StatusType.warn);
+      final xf = await _cam!.takePicture();
+      final bytes = await xf.readAsBytes();
+      onThumbUpdate?.call(bytes);
 
       _setStatus('Đang gửi ảnh lên server...', StatusType.muted);
-      await _sendToApi(bytes, config);
 
-      _cooldownUntil = DateTime.now().add(Duration(milliseconds: config.cooldownMs));
-      _stableStartAt = null;
+      final uri = Uri.parse(cfg.apiUrl);
+      final req = http.MultipartRequest('POST', uri)
+        ..fields['ModuleSessionId'] = cfg.moduleSessionId.toString()
+        ..fields['Thresh'] = cfg.thresh.toString()
+        ..files.add(http.MultipartFile.fromBytes('file', bytes, filename: 'autocapture.jpg'));
+
+      final streamed = await req.send().timeout(const Duration(seconds: 15));
+      final resp = await http.Response.fromStream(streamed);
+
+      Map<String, dynamic> json;
+      try {
+        json = jsonDecode(resp.body) as Map<String, dynamic>;
+      } catch (_) {
+        throw Exception('Response không hợp lệ: ${resp.body}');
+      }
+
+      final result = AttendanceResult.fromJson(json);
+      onResult?.call(result);
+
+      if (resp.statusCode < 200 || resp.statusCode >= 300 || !result.ok) {
+        _setStatus(result.message.isNotEmpty ? result.message : 'Điểm danh thất bại', StatusType.error);
+      } else {
+        final name = (result.studentName != '—' && result.studentName.isNotEmpty)
+            ? result.studentName
+            : result.message;
+        onSuccess?.call(name);
+        _setStatus('Điểm danh thành công', StatusType.success);
+      }
+
+      _cooldownUntil = DateTime.now().add(Duration(milliseconds: cfg.cooldownMs));
+      _stableStart = null;
       onProgressUpdate?.call(0);
     } catch (e) {
-      _setStatus('Lỗi khi gửi ảnh: $e', StatusType.error);
+      _setStatus('Lỗi: $e', StatusType.error);
     } finally {
-      _isSending = false;
+      _sending = false;
     }
   }
 
-  Future<void> _sendToApi(Uint8List imageBytes, AppConfig config) async {
-    final uri = Uri.parse(config.apiUrl);
-    final request = http.MultipartRequest('POST', uri)
-      ..fields['ModuleSessionId'] = config.moduleSessionId.toString()
-      ..fields['Thresh'] = config.thresh.toString()
-      ..files.add(http.MultipartFile.fromBytes(
-        'file', imageBytes,
-        filename: 'autocapture.jpg',
-      ));
-
-    final streamedResponse = await request.send().timeout(const Duration(seconds: 15));
-    final response = await http.Response.fromStream(streamedResponse);
-    final body = response.body;
-
-    Map<String, dynamic> json;
-    try {
-      json = jsonDecode(body) as Map<String, dynamic>;
-    } catch (_) {
-      throw Exception('Response không hợp lệ: $body');
-    }
-
-    final result = AttendanceResult.fromJson(json);
-    onResult?.call(result);
-
-    if (!response.ok || result.ok == false) {
-      _setStatus(result.message.isNotEmpty ? result.message : 'Điểm danh thất bại', StatusType.error);
-    } else {
-      final name = result.studentName.isNotEmpty && result.studentName != '—'
-          ? result.studentName
-          : result.message;
-      await _playSuccessSound(config.audioPath);
-      onSuccess?.call(name);
-      _setStatus('Điểm danh thành công', StatusType.success);
-    }
-  }
-
-  // ─── Audio ───
-  Future<void> _playSuccessSound(String path) async {
-    try {
-      if (path.trim().isNotEmpty) {
-        await _audioPlayer.play(AssetSource(path.trim()));
-      } else {
-        // Default: system short sound or silent
-        await _audioPlayer.play(AssetSource('sounds/ting.mp3'));
-      }
-    } catch (_) {
-      // Silently fail — audio is optional
-    }
-  }
-
-  // ─── Helpers ───
-  void _setStatus(String text, StatusType type) {
-    onStatusUpdate?.call(text, type);
-  }
-
-  void _resetBadges() {
-    onBadgesUpdate?.call(
-      const BadgeInfo('Chưa phát hiện mặt', BadgeMode.normal),
-      const BadgeInfo('Khoảng cách: —', BadgeMode.normal),
-      const BadgeInfo('Vị trí: —', BadgeMode.normal),
-      const BadgeInfo('Ổn định: —', BadgeMode.normal),
-    );
-  }
-}
-
-extension on http.Response {
-  bool get ok => statusCode >= 200 && statusCode < 300;
+  void _setStatus(String t, StatusType s) => onStatusUpdate?.call(t, s);
+  void _resetBadges() => onBadgesUpdate?.call(
+        const BadgeInfo('Chưa phát hiện mặt', BadgeMode.normal),
+        const BadgeInfo('Khoảng cách: —', BadgeMode.normal),
+        const BadgeInfo('Vị trí: —', BadgeMode.normal),
+        const BadgeInfo('Ổn định: —', BadgeMode.normal),
+      );
 }

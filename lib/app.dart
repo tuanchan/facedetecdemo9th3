@@ -1,9 +1,10 @@
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:camera/camera.dart';
 import 'logic.dart';
 
 class FaceAttendanceApp extends StatelessWidget {
   const FaceAttendanceApp({super.key});
-
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
@@ -11,12 +12,8 @@ class FaceAttendanceApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         useMaterial3: true,
-        fontFamily: 'IBMPlexSans',
-        colorScheme: const ColorScheme.light(
-          surface: Color(0xFFFFFFFF),
-          onSurface: Color(0xFF111110),
-        ),
         scaffoldBackgroundColor: const Color(0xFFF9F9F8),
+        colorScheme: const ColorScheme.light(surface: Colors.white),
       ),
       home: const FaceAttendanceScreen(),
     );
@@ -24,189 +21,149 @@ class FaceAttendanceApp extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────
-// CONFIG MODEL
-// ─────────────────────────────────────────────
-class AppConfig {
-  String apiUrl;
-  int moduleSessionId;
-  double thresh;
-  int holdMs;
-  int cooldownMs;
-  double minFaceWidthRatio;
-  double maxFaceWidthRatio;
-  double centerToleranceX;
-  double centerToleranceY;
-  double maxMovePx;
-  String audioPath;
-
-  AppConfig({
-    this.apiUrl = 'https://your-api.example.com/api/FaceAttendance/checkin-image',
-    this.moduleSessionId = 1,
-    this.thresh = 0.36,
-    this.holdMs = 1200,
-    this.cooldownMs = 4000,
-    this.minFaceWidthRatio = 0.20,
-    this.maxFaceWidthRatio = 0.72,
-    this.centerToleranceX = 0.18,
-    this.centerToleranceY = 0.22,
-    this.maxMovePx = 18,
-    this.audioPath = '',
-  });
-}
-
-// ─────────────────────────────────────────────
 // MAIN SCREEN
 // ─────────────────────────────────────────────
+
 class FaceAttendanceScreen extends StatefulWidget {
   const FaceAttendanceScreen({super.key});
-
   @override
   State<FaceAttendanceScreen> createState() => _FaceAttendanceScreenState();
 }
 
 class _FaceAttendanceScreenState extends State<FaceAttendanceScreen>
-    with TickerProviderStateMixin {
-  final AppConfig _config = AppConfig();
-  final FaceAttendanceLogic _logic = FaceAttendanceLogic();
+    with SingleTickerProviderStateMixin {
+
+  final _logic = FaceAttendanceLogic();
+  final _cfg = AppConfig();
   bool _configOpen = false;
 
-  // Controllers for config fields
-  late TextEditingController _apiUrlCtrl;
-  late TextEditingController _sessionIdCtrl;
-  late TextEditingController _threshCtrl;
-  late TextEditingController _holdMsCtrl;
-  late TextEditingController _cooldownMsCtrl;
-  late TextEditingController _minFaceRatioCtrl;
-  late TextEditingController _maxFaceRatioCtrl;
-  late TextEditingController _tolXCtrl;
-  late TextEditingController _tolYCtrl;
-  late TextEditingController _maxMoveCtrl;
+  // Config controllers
+  late final TextEditingController _cApiUrl;
+  late final TextEditingController _cSession;
+  late final TextEditingController _cThresh;
+  late final TextEditingController _cHold;
+  late final TextEditingController _cCooldown;
+  late final TextEditingController _cMinFace;
+  late final TextEditingController _cMaxFace;
+  late final TextEditingController _cTolX;
+  late final TextEditingController _cTolY;
+  late final TextEditingController _cMove;
 
   // UI state
   String _statusText = 'Sẵn sàng';
   StatusType _statusType = StatusType.muted;
-  double _progress = 0.0;
-  bool _isCameraRunning = false;
+  double _progress = 0;
+  bool _cameraOn = false;
 
-  // Badge state
-  BadgeInfo _badgeFace = BadgeInfo('Chưa phát hiện mặt', BadgeMode.normal);
-  BadgeInfo _badgeSize = BadgeInfo('Khoảng cách: —', BadgeMode.normal);
-  BadgeInfo _badgeZone = BadgeInfo('Vị trí: —', BadgeMode.normal);
-  BadgeInfo _badgeStable = BadgeInfo('Ổn định: —', BadgeMode.normal);
+  BadgeInfo _bFace = const BadgeInfo('Chưa phát hiện mặt', BadgeMode.normal);
+  BadgeInfo _bSize = const BadgeInfo('Khoảng cách: —', BadgeMode.normal);
+  BadgeInfo _bZone = const BadgeInfo('Vị trí: —', BadgeMode.normal);
+  BadgeInfo _bStable = const BadgeInfo('Ổn định: —', BadgeMode.normal);
 
-  // Result
+  List<FaceBox> _faces = [];
+  bool _faceOk = false;
+  bool _multiFace = false;
+
   AttendanceResult? _result;
+  Uint8List? _thumb;
 
   // Success overlay
   bool _showSuccess = false;
   String _successName = '';
-  late AnimationController _successAnimCtrl;
-  late Animation<double> _successFadeAnim;
-  late Animation<double> _successScaleAnim;
+  late final AnimationController _successCtrl;
+  late final Animation<double> _successFade;
+  late final Animation<double> _successScale;
 
   @override
   void initState() {
     super.initState();
-    _initControllers();
 
-    _successAnimCtrl = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 2600),
-    );
-    _successFadeAnim = TweenSequence([
+    _cApiUrl = TextEditingController(text: _cfg.apiUrl);
+    _cSession = TextEditingController(text: _cfg.moduleSessionId.toString());
+    _cThresh = TextEditingController(text: _cfg.thresh.toString());
+    _cHold = TextEditingController(text: _cfg.holdMs.toString());
+    _cCooldown = TextEditingController(text: _cfg.cooldownMs.toString());
+    _cMinFace = TextEditingController(text: _cfg.minFaceWidthRatio.toString());
+    _cMaxFace = TextEditingController(text: _cfg.maxFaceWidthRatio.toString());
+    _cTolX = TextEditingController(text: _cfg.centerToleranceX.toString());
+    _cTolY = TextEditingController(text: _cfg.centerToleranceY.toString());
+    _cMove = TextEditingController(text: _cfg.maxMovePx.toString());
+
+    _successCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 2600));
+    _successFade = TweenSequence([
       TweenSequenceItem(tween: Tween(begin: 0.0, end: 1.0), weight: 10),
       TweenSequenceItem(tween: ConstantTween(1.0), weight: 60),
       TweenSequenceItem(tween: Tween(begin: 1.0, end: 0.0), weight: 30),
-    ]).animate(_successAnimCtrl);
-    _successScaleAnim = CurvedAnimation(
-      parent: _successAnimCtrl,
-      curve: const Interval(0, 0.15, curve: Curves.elasticOut),
-    ).drive(Tween(begin: 0.8, end: 1.0));
+    ]).animate(_successCtrl);
+    _successScale = CurvedAnimation(
+      parent: _successCtrl,
+      curve: const Interval(0, 0.18, curve: Curves.elasticOut),
+    ).drive(Tween(begin: 0.75, end: 1.0));
 
-    _logic.onStatusUpdate = (text, type) {
-      if (mounted) setState(() { _statusText = text; _statusType = type; });
+    // Wire callbacks
+    _logic.onStatusUpdate = (t, s) { if (mounted) setState(() { _statusText = t; _statusType = s; }); };
+    _logic.onProgressUpdate = (p) { if (mounted) setState(() => _progress = p); };
+    _logic.onBadgesUpdate = (f, s, z, st) { if (mounted) setState(() { _bFace = f; _bSize = s; _bZone = z; _bStable = st; }); };
+    _logic.onResult = (r) { if (mounted) setState(() => _result = r); };
+    _logic.onSuccess = (n) { if (mounted) _triggerSuccess(n); };
+    _logic.onCameraStateChange = (on) { if (mounted) setState(() => _cameraOn = on); };
+    _logic.onFacesUpdate = (faces, ok, multi) {
+      if (mounted) setState(() { _faces = faces; _faceOk = ok; _multiFace = multi; });
     };
-    _logic.onProgressUpdate = (pct) {
-      if (mounted) setState(() { _progress = pct; });
-    };
-    _logic.onBadgesUpdate = (face, size, zone, stable) {
-      if (mounted) setState(() {
-        _badgeFace = face; _badgeSize = size; _badgeZone = zone; _badgeStable = stable;
-      });
-    };
-    _logic.onResult = (result) {
-      if (mounted) setState(() { _result = result; });
-    };
-    _logic.onSuccess = (name) {
-      if (mounted) _triggerSuccessOverlay(name);
-    };
-    _logic.onCameraStateChange = (running) {
-      if (mounted) setState(() { _isCameraRunning = running; });
-    };
+    _logic.onThumbUpdate = (b) { if (mounted) setState(() => _thumb = b); };
   }
 
-  void _initControllers() {
-    _apiUrlCtrl = TextEditingController(text: _config.apiUrl);
-    _sessionIdCtrl = TextEditingController(text: _config.moduleSessionId.toString());
-    _threshCtrl = TextEditingController(text: _config.thresh.toString());
-    _holdMsCtrl = TextEditingController(text: _config.holdMs.toString());
-    _cooldownMsCtrl = TextEditingController(text: _config.cooldownMs.toString());
-    _minFaceRatioCtrl = TextEditingController(text: _config.minFaceWidthRatio.toString());
-    _maxFaceRatioCtrl = TextEditingController(text: _config.maxFaceWidthRatio.toString());
-    _tolXCtrl = TextEditingController(text: _config.centerToleranceX.toString());
-    _tolYCtrl = TextEditingController(text: _config.centerToleranceY.toString());
-    _maxMoveCtrl = TextEditingController(text: _config.maxMovePx.toString());
+  void _syncConfig() {
+    _cfg.apiUrl = _cApiUrl.text.trim();
+    _cfg.moduleSessionId = int.tryParse(_cSession.text) ?? 1;
+    _cfg.thresh = double.tryParse(_cThresh.text) ?? 0.36;
+    _cfg.holdMs = int.tryParse(_cHold.text) ?? 1200;
+    _cfg.cooldownMs = int.tryParse(_cCooldown.text) ?? 4000;
+    _cfg.minFaceWidthRatio = double.tryParse(_cMinFace.text) ?? 0.20;
+    _cfg.maxFaceWidthRatio = double.tryParse(_cMaxFace.text) ?? 0.72;
+    _cfg.centerToleranceX = double.tryParse(_cTolX.text) ?? 0.18;
+    _cfg.centerToleranceY = double.tryParse(_cTolY.text) ?? 0.22;
+    _cfg.maxMovePx = double.tryParse(_cMove.text) ?? 18;
   }
 
-  void _syncConfigFromControllers() {
-    _config.apiUrl = _apiUrlCtrl.text.trim();
-    _config.moduleSessionId = int.tryParse(_sessionIdCtrl.text) ?? 1;
-    _config.thresh = double.tryParse(_threshCtrl.text) ?? 0.36;
-    _config.holdMs = int.tryParse(_holdMsCtrl.text) ?? 1200;
-    _config.cooldownMs = int.tryParse(_cooldownMsCtrl.text) ?? 4000;
-    _config.minFaceWidthRatio = double.tryParse(_minFaceRatioCtrl.text) ?? 0.20;
-    _config.maxFaceWidthRatio = double.tryParse(_maxFaceRatioCtrl.text) ?? 0.72;
-    _config.centerToleranceX = double.tryParse(_tolXCtrl.text) ?? 0.18;
-    _config.centerToleranceY = double.tryParse(_tolYCtrl.text) ?? 0.22;
-    _config.maxMovePx = double.tryParse(_maxMoveCtrl.text) ?? 18;
-  }
-
-  void _triggerSuccessOverlay(String name) {
+  void _triggerSuccess(String name) {
     setState(() { _showSuccess = true; _successName = name; });
-    _successAnimCtrl.forward(from: 0);
+    _successCtrl.forward(from: 0);
     Future.delayed(const Duration(milliseconds: 2700), () {
-      if (mounted) setState(() { _showSuccess = false; });
+      if (mounted) setState(() => _showSuccess = false);
     });
   }
 
   @override
   void dispose() {
     _logic.stopAll();
-    _successAnimCtrl.dispose();
-    _apiUrlCtrl.dispose(); _sessionIdCtrl.dispose(); _threshCtrl.dispose();
-    _holdMsCtrl.dispose(); _cooldownMsCtrl.dispose(); _minFaceRatioCtrl.dispose();
-    _maxFaceRatioCtrl.dispose(); _tolXCtrl.dispose(); _tolYCtrl.dispose(); _maxMoveCtrl.dispose();
+    _successCtrl.dispose();
+    for (final c in [_cApiUrl, _cSession, _cThresh, _cHold, _cCooldown,
+                     _cMinFace, _cMaxFace, _cTolX, _cTolY, _cMove]) {
+      c.dispose();
+    }
     super.dispose();
   }
 
   // ─────────────── BUILD ───────────────
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF9F9F8),
       body: Stack(
         children: [
           SafeArea(
             child: Column(
               children: [
-                _buildHeader(),
+                _header(),
                 Expanded(
                   child: SingleChildScrollView(
                     child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        _buildConfig(),
-                        _buildCameraSection(),
-                        if (_result != null) _buildResultSection(),
+                        _configSection(),
+                        _cameraSection(),
+                        _resultSection(),   // Luôn hiện, ẩn nội dung khi chưa có data
                       ],
                     ),
                   ),
@@ -214,46 +171,47 @@ class _FaceAttendanceScreenState extends State<FaceAttendanceScreen>
               ],
             ),
           ),
-          if (_showSuccess) _buildSuccessOverlay(),
+          if (_showSuccess) _successOverlay(),
         ],
       ),
     );
   }
 
-  // ─────────── HEADER ───────────
-  Widget _buildHeader() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-      decoration: const BoxDecoration(
-        color: Colors.white,
-        border: Border(bottom: BorderSide(color: Color(0xFFE2E2DF))),
-      ),
-      child: Row(
-        children: [
-          Container(width: 8, height: 8, decoration: const BoxDecoration(color: Color(0xFF111110), shape: BoxShape.circle)),
+  // ── HEADER ──
+
+  Widget _header() => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          border: Border(bottom: BorderSide(color: Color(0xFFE2E2DF))),
+        ),
+        child: Row(children: [
+          Container(width: 8, height: 8,
+              decoration: const BoxDecoration(color: Color(0xFF111110), shape: BoxShape.circle)),
           const SizedBox(width: 10),
           const Text('ĐIỂM DANH KHUÔN MẶT',
-              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, letterSpacing: 1.0, color: Color(0xFF111110))),
-        ],
-      ),
-    );
-  }
+              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
+                  letterSpacing: 1.0, color: Color(0xFF111110))),
+        ]),
+      );
 
-  // ─────────── CONFIG ───────────
-  Widget _buildConfig() {
-    return Container(
-      decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: Color(0xFFE2E2DF)))),
-      child: Column(
-        children: [
+  // ── CONFIG ──
+
+  Widget _configSection() => Container(
+        color: Colors.white,
+        decoration: const BoxDecoration(
+            border: Border(bottom: BorderSide(color: Color(0xFFE2E2DF)))),
+        child: Column(children: [
           GestureDetector(
             onTap: () => setState(() => _configOpen = !_configOpen),
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-              color: Colors.white,
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const Text('CẤU HÌNH', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, letterSpacing: 1.2, color: Color(0xFF888885))),
+                  const Text('CẤU HÌNH',
+                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
+                          letterSpacing: 1.2, color: Color(0xFF888885))),
                   AnimatedRotation(
                     turns: _configOpen ? 0.5 : 0,
                     duration: const Duration(milliseconds: 200),
@@ -267,116 +225,96 @@ class _FaceAttendanceScreenState extends State<FaceAttendanceScreen>
             duration: const Duration(milliseconds: 200),
             crossFadeState: _configOpen ? CrossFadeState.showSecond : CrossFadeState.showFirst,
             firstChild: const SizedBox.shrink(),
-            secondChild: Container(
-              color: Colors.white,
+            secondChild: Padding(
               padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
-              child: Column(
-                children: [
-                  _configField('API URL', _apiUrlCtrl, keyboardType: TextInputType.url),
-                  const SizedBox(height: 12),
-                  Row(children: [
-                    Expanded(child: _configField('Session ID', _sessionIdCtrl, keyboardType: TextInputType.number)),
-                    const SizedBox(width: 12),
-                    Expanded(child: _configField('Thresh', _threshCtrl, keyboardType: TextInputType.number)),
-                  ]),
-                  const SizedBox(height: 12),
-                  Row(children: [
-                    Expanded(child: _configField('Hold (ms)', _holdMsCtrl, keyboardType: TextInputType.number)),
-                    const SizedBox(width: 12),
-                    Expanded(child: _configField('Cooldown (ms)', _cooldownMsCtrl, keyboardType: TextInputType.number)),
-                  ]),
-                  const SizedBox(height: 12),
-                  Row(children: [
-                    Expanded(child: _configField('Min Face Ratio', _minFaceRatioCtrl, keyboardType: TextInputType.number)),
-                    const SizedBox(width: 12),
-                    Expanded(child: _configField('Max Face Ratio', _maxFaceRatioCtrl, keyboardType: TextInputType.number)),
-                  ]),
-                  const SizedBox(height: 12),
-                  Row(children: [
-                    Expanded(child: _configField('Center Tol X', _tolXCtrl, keyboardType: TextInputType.number)),
-                    const SizedBox(width: 12),
-                    Expanded(child: _configField('Center Tol Y', _tolYCtrl, keyboardType: TextInputType.number)),
-                  ]),
-                  const SizedBox(height: 12),
-                  _configField('Max Move (px)', _maxMoveCtrl, keyboardType: TextInputType.number),
-                ],
-              ),
+              child: Column(children: [
+                _field('API URL', _cApiUrl, type: TextInputType.url),
+                const SizedBox(height: 12),
+                _fieldRow('Session ID', _cSession, 'Thresh', _cThresh),
+                const SizedBox(height: 12),
+                _fieldRow('Hold (ms)', _cHold, 'Cooldown (ms)', _cCooldown),
+                const SizedBox(height: 12),
+                _fieldRow('Min Face Ratio', _cMinFace, 'Max Face Ratio', _cMaxFace),
+                const SizedBox(height: 12),
+                _fieldRow('Center Tol X', _cTolX, 'Center Tol Y', _cTolY),
+                const SizedBox(height: 12),
+                _field('Max Move (px)', _cMove, type: TextInputType.number),
+              ]),
             ),
           ),
-        ],
-      ),
-    );
-  }
+        ]),
+      );
 
-  Widget _configField(String label, TextEditingController ctrl, {TextInputType? keyboardType}) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
+  Widget _fieldRow(String l1, TextEditingController c1, String l2, TextEditingController c2) =>
+      Row(children: [
+        Expanded(child: _field(l1, c1)),
+        const SizedBox(width: 12),
+        Expanded(child: _field(l2, c2)),
+      ]);
+
+  Widget _field(String label, TextEditingController ctrl,
+      {TextInputType type = TextInputType.number}) =>
+      Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Text(label.toUpperCase(),
-            style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w600, letterSpacing: 0.8, color: Color(0xFF888885))),
+            style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w600,
+                letterSpacing: 0.8, color: Color(0xFF888885))),
         const SizedBox(height: 4),
         TextField(
           controller: ctrl,
-          keyboardType: keyboardType,
-          style: const TextStyle(fontSize: 13, fontFamily: 'monospace', color: Color(0xFF111110)),
+          keyboardType: type,
+          style: const TextStyle(fontSize: 13, fontFamily: 'monospace'),
           decoration: InputDecoration(
             contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(4), borderSide: const BorderSide(color: Color(0xFFE2E2DF))),
-            enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(4), borderSide: const BorderSide(color: Color(0xFFE2E2DF))),
-            focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(4), borderSide: const BorderSide(color: Color(0xFF111110))),
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(4),
+                borderSide: const BorderSide(color: Color(0xFFE2E2DF))),
+            enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(4),
+                borderSide: const BorderSide(color: Color(0xFFE2E2DF))),
+            focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(4),
+                borderSide: const BorderSide(color: Color(0xFF111110))),
             filled: true,
             fillColor: const Color(0xFFF9F9F8),
           ),
         ),
-      ],
-    );
-  }
+      ]);
 
-  // ─────────── CAMERA SECTION ───────────
-  Widget _buildCameraSection() {
-    return Container(
-      color: Colors.white,
-      padding: const EdgeInsets.all(20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Camera preview
-          _buildCameraPreview(),
+  // ── CAMERA SECTION ──
+
+  Widget _cameraSection() => Container(
+        color: Colors.white,
+        padding: const EdgeInsets.all(20),
+        decoration: const BoxDecoration(
+            border: Border(bottom: BorderSide(color: Color(0xFFE2E2DF)))),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          // Camera + overlay
+          _cameraPreview(),
           // Progress bar
-          const SizedBox(height: 10),
+          const SizedBox(height: 8),
           ClipRRect(
-            borderRadius: BorderRadius.circular(1),
             child: LinearProgressIndicator(
               value: _progress,
               minHeight: 2,
               backgroundColor: const Color(0xFFE2E2DF),
-              color: const Color(0xFF111110),
+              valueColor: const AlwaysStoppedAnimation(Color(0xFF111110)),
             ),
           ),
           // Badges
           const SizedBox(height: 10),
-          Wrap(
-            spacing: 6, runSpacing: 6,
-            children: [_buildBadge(_badgeFace), _buildBadge(_badgeSize), _buildBadge(_badgeZone), _buildBadge(_badgeStable)],
-          ),
+          Wrap(spacing: 6, runSpacing: 6,
+              children: [_badge(_bFace), _badge(_bSize), _badge(_bZone), _badge(_bStable)]),
           // Status
           const SizedBox(height: 12),
-          Row(
-            children: [
-              _buildStatusDot(),
-              const SizedBox(width: 8),
-              Text(_statusText, style: TextStyle(fontSize: 13, color: _statusColor())),
-            ],
-          ),
+          Row(children: [
+            _dot(),
+            const SizedBox(width: 8),
+            Flexible(child: Text(_statusText,
+                style: TextStyle(fontSize: 13, color: _statusColor()))),
+          ]),
           // Buttons
           const SizedBox(height: 12),
           SizedBox(
             width: double.infinity,
             child: ElevatedButton(
-              onPressed: () {
-                _syncConfigFromControllers();
-                _logic.startAll(_config);
-              },
+              onPressed: () { _syncConfig(); _logic.startAll(_cfg); },
               style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFF111110),
                 foregroundColor: Colors.white,
@@ -389,63 +327,60 @@ class _FaceAttendanceScreenState extends State<FaceAttendanceScreen>
             ),
           ),
           const SizedBox(height: 8),
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton(
-                  onPressed: _logic.stopAll,
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: const Color(0xFFB91C1C),
-                    side: const BorderSide(color: Color(0xFFFECACA)),
-                    padding: const EdgeInsets.symmetric(vertical: 10),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
-                  ),
-                  child: const Text('TẮT CAMERA',
-                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 0.5)),
+          Row(children: [
+            Expanded(
+              child: OutlinedButton(
+                onPressed: _logic.stopAll,
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: const Color(0xFFB91C1C),
+                  side: const BorderSide(color: Color(0xFFFECACA)),
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
                 ),
+                child: const Text('TẮT CAMERA',
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
               ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: OutlinedButton(
-                  onPressed: () {
-                    _syncConfigFromControllers();
-                    _logic.manualCapture(_config);
-                  },
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: const Color(0xFF111110),
-                    side: const BorderSide(color: Color(0xFFE2E2DF)),
-                    padding: const EdgeInsets.symmetric(vertical: 10),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
-                  ),
-                  child: const Text('CHỤP & GỬI',
-                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 0.5)),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: OutlinedButton(
+                onPressed: () { _syncConfig(); _logic.manualCapture(_cfg); },
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: const Color(0xFF111110),
+                  side: const BorderSide(color: Color(0xFFE2E2DF)),
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
                 ),
+                child: const Text('CHỤP & GỬI',
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
               ),
-            ],
-          ),
+            ),
+          ]),
           const SizedBox(height: 8),
           const Text('Yêu cầu: camera permission được cấp',
-              style: TextStyle(fontSize: 11, color: Color(0xFF888885), fontFamily: 'monospace')),
-          // Thumb preview
-          if (_logic.lastCapturedImageBytes != null) ...[
+              style: TextStyle(fontSize: 11, color: Color(0xFF888885))),
+          // Thumb
+          if (_thumb != null) ...[
             const SizedBox(height: 12),
             Container(
-              decoration: BoxDecoration(border: Border.all(color: const Color(0xFFE2E2DF)), borderRadius: BorderRadius.circular(4)),
+              decoration: BoxDecoration(
+                  border: Border.all(color: const Color(0xFFE2E2DF)),
+                  borderRadius: BorderRadius.circular(4)),
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(4),
-                child: Image.memory(_logic.lastCapturedImageBytes!, fit: BoxFit.cover),
+                child: Image.memory(_thumb!, fit: BoxFit.cover),
               ),
             ),
           ],
-        ],
-      ),
-    );
-  }
+        ]),
+      );
 
-  Widget _buildCameraPreview() {
+  // Camera preview với CustomPaint overlay
+  Widget _cameraPreview() {
+    final camCtrl = _logic.cameraController;
     return Container(
       width: double.infinity,
-      constraints: const BoxConstraints(minHeight: 280, maxHeight: 400),
+      constraints: const BoxConstraints(minHeight: 280, maxHeight: 420),
       decoration: BoxDecoration(
         color: Colors.black,
         borderRadius: BorderRadius.circular(4),
@@ -453,25 +388,174 @@ class _FaceAttendanceScreenState extends State<FaceAttendanceScreen>
       ),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(4),
-        child: _logic.cameraPreviewWidget(context) ??
-            const Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
+        child: camCtrl != null && camCtrl.value.isInitialized
+            ? Stack(
+                fit: StackFit.expand,
                 children: [
-                  Icon(Icons.camera_alt_outlined, color: Colors.white30, size: 48),
-                  SizedBox(height: 12),
-                  Text('Nhấn "Mở camera" để bắt đầu',
-                      style: TextStyle(color: Colors.white38, fontSize: 13)),
+                  // Camera feed
+                  CameraPreview(camCtrl),
+                  // Guide box + face box overlay
+                  CustomPaint(
+                    painter: GuideBoxPainter(
+                      faces: _faces,
+                      faceOk: _faceOk,
+                      multipleFaces: _multiFace,
+                    ),
+                  ),
                 ],
+              )
+            : const Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.camera_alt_outlined, color: Colors.white30, size: 48),
+                    SizedBox(height: 12),
+                    Text('Nhấn "Mở camera" để bắt đầu',
+                        style: TextStyle(color: Colors.white38, fontSize: 13)),
+                  ],
+                ),
               ),
-            ),
       ),
     );
   }
 
-  Widget _buildBadge(BadgeInfo badge) {
+  // ── RESULT SECTION ──
+
+  Widget _resultSection() => Container(
+        color: Colors.white,
+        padding: const EdgeInsets.all(20),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text('KẾT QUẢ',
+              style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
+                  letterSpacing: 1.2, color: Color(0xFF888885))),
+          const SizedBox(height: 12),
+          _result == null
+              ? Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(vertical: 20),
+                  decoration: BoxDecoration(
+                    border: Border.all(color: const Color(0xFFE2E2DF)),
+                    borderRadius: BorderRadius.circular(4),
+                    color: const Color(0xFFF9F9F8),
+                  ),
+                  child: const Center(
+                    child: Text('Chưa có kết quả điểm danh',
+                        style: TextStyle(fontSize: 13, color: Color(0xFF888885))),
+                  ),
+                )
+              : Container(
+                  decoration: BoxDecoration(
+                      border: Border.all(color: const Color(0xFFE2E2DF)),
+                      borderRadius: BorderRadius.circular(4)),
+                  child: Column(children: [
+                    _rRow('Thông báo', _result!.message),
+                    _rRow('Học viên', _result!.studentName),
+                    _rRow('Mã học viên', _result!.studentCode),
+                    _rRow('Điểm match',
+                        _result!.score != null ? _result!.score!.toStringAsFixed(4) : '—'),
+                    _rRowStatus('Trạng thái', _result!.ok ? 'Thành công' : 'Thất bại', _result!.ok),
+                  ]),
+                ),
+        ]),
+      );
+
+  Widget _rRow(String key, String val) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+        decoration: const BoxDecoration(
+            border: Border(bottom: BorderSide(color: Color(0xFFE2E2DF)))),
+        child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+          Text(key.toUpperCase(),
+              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
+                  letterSpacing: 0.6, color: Color(0xFF888885), fontFamily: 'monospace')),
+          Flexible(
+            child: Text(val,
+                textAlign: TextAlign.right,
+                style: const TextStyle(fontSize: 13, fontFamily: 'monospace', color: Color(0xFF111110))),
+          ),
+        ]),
+      );
+
+  Widget _rRowStatus(String key, String val, bool ok) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+        child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+          Text(key.toUpperCase(),
+              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
+                  letterSpacing: 0.6, color: Color(0xFF888885), fontFamily: 'monospace')),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+            decoration: BoxDecoration(
+              color: ok ? const Color(0xFFF0FAF4) : const Color(0xFFFFF5F5),
+              border: Border.all(color: ok ? const Color(0xFF1A6640) : const Color(0xFFB91C1C)),
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: Text(val,
+                style: TextStyle(
+                    fontSize: 12, fontWeight: FontWeight.w600, fontFamily: 'monospace',
+                    color: ok ? const Color(0xFF1A6640) : const Color(0xFFB91C1C))),
+          ),
+        ]),
+      );
+
+  // ── SUCCESS OVERLAY ──
+
+  Widget _successOverlay() => AnimatedBuilder(
+        animation: _successCtrl,
+        builder: (_, __) => Opacity(
+          opacity: _successFade.value,
+          child: Container(
+            color: Colors.black.withOpacity(0.3),
+            child: Center(
+              child: Transform.scale(
+                scale: _successScale.value,
+                child: Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 40),
+                  padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 32),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.97),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: const Color(0xFF16A34A), width: 2),
+                    boxShadow: [
+                      BoxShadow(color: Colors.black.withOpacity(0.15),
+                          blurRadius: 40, offset: const Offset(0, 16)),
+                    ],
+                  ),
+                  child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    Container(
+                      width: 72, height: 72,
+                      decoration: const BoxDecoration(
+                          color: Color(0xFFDCFCE7), shape: BoxShape.circle),
+                      child: const Icon(Icons.check_rounded, color: Color(0xFF16A34A), size: 42),
+                    ),
+                    const SizedBox(height: 14),
+                    const Text('Điểm danh thành công!',
+                        style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600,
+                            color: Color(0xFF15803D))),
+                    const SizedBox(height: 10),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF0FDF4),
+                        border: Border.all(color: const Color(0xFFBBF7D0)),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text(_successName,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(fontSize: 14,
+                              fontFamily: 'monospace', color: Color(0xFF374151))),
+                    ),
+                  ]),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
+  // ── HELPERS ──
+
+  Widget _badge(BadgeInfo b) {
     Color bg, border, text;
-    switch (badge.mode) {
+    switch (b.mode) {
       case BadgeMode.ok:
         bg = const Color(0xFFF0FAF4); border = const Color(0xFF1A6640); text = const Color(0xFF1A6640);
         break;
@@ -483,138 +567,29 @@ class _FaceAttendanceScreenState extends State<FaceAttendanceScreen>
     }
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(color: bg, border: Border.all(color: border), borderRadius: BorderRadius.circular(4)),
-      child: Text(badge.label, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: text, fontFamily: 'monospace')),
+      decoration: BoxDecoration(color: bg, border: Border.all(color: border),
+          borderRadius: BorderRadius.circular(4)),
+      child: Text(b.label,
+          style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
+              fontFamily: 'monospace', color: text)),
     );
   }
 
-  Widget _buildStatusDot() {
-    Color color;
-    switch (_statusType) {
-      case StatusType.success: color = const Color(0xFF1A6640); break;
-      case StatusType.error: color = const Color(0xFFB91C1C); break;
-      case StatusType.warn: color = const Color(0xFFD97706); break;
-      default: color = const Color(0xFF888885);
-    }
-    return Container(width: 6, height: 6, decoration: BoxDecoration(color: color, shape: BoxShape.circle));
+  Widget _dot() {
+    final color = {
+      StatusType.success: const Color(0xFF1A6640),
+      StatusType.error: const Color(0xFFB91C1C),
+      StatusType.warn: const Color(0xFFD97706),
+      StatusType.muted: const Color(0xFF888885),
+    }[_statusType]!;
+    return Container(width: 6, height: 6,
+        decoration: BoxDecoration(color: color, shape: BoxShape.circle));
   }
 
-  Color _statusColor() {
-    switch (_statusType) {
-      case StatusType.success: return const Color(0xFF1A6640);
-      case StatusType.error: return const Color(0xFFB91C1C);
-      case StatusType.warn: return const Color(0xFF92400E);
-      default: return const Color(0xFF888885);
-    }
-  }
-
-  // ─────────── RESULT ───────────
-  Widget _buildResultSection() {
-    final r = _result!;
-    return Container(
-      color: Colors.white,
-      padding: const EdgeInsets.all(20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text('KẾT QUẢ',
-              style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, letterSpacing: 1.2, color: Color(0xFF888885))),
-          const SizedBox(height: 12),
-          Container(
-            decoration: BoxDecoration(border: Border.all(color: const Color(0xFFE2E2DF)), borderRadius: BorderRadius.circular(4)),
-            child: Column(
-              children: [
-                _resultRow('Thông báo', r.message),
-                _resultRow('Học viên', r.studentName),
-                _resultRow('Mã học viên', r.studentCode),
-                _resultRow('Điểm match', r.score != null ? r.score!.toStringAsFixed(4) : '—'),
-                _resultRow('Trạng thái', r.ok ? 'Thành công' : 'Thất bại', isStatus: true, ok: r.ok),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _resultRow(String key, String value, {bool isStatus = false, bool ok = false}) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-      decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: Color(0xFFE2E2DF)))),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(key.toUpperCase(),
-              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, letterSpacing: 0.6, color: Color(0xFF888885), fontFamily: 'monospace')),
-          Flexible(
-            child: Text(value,
-                textAlign: TextAlign.right,
-                style: TextStyle(
-                  fontSize: 13, fontFamily: 'monospace',
-                  color: isStatus ? (ok ? const Color(0xFF1A6640) : const Color(0xFFB91C1C)) : const Color(0xFF111110),
-                  fontWeight: isStatus ? FontWeight.w600 : FontWeight.normal,
-                )),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ─────────── SUCCESS OVERLAY ───────────
-  Widget _buildSuccessOverlay() {
-    return AnimatedBuilder(
-      animation: _successAnimCtrl,
-      builder: (context, child) {
-        return Opacity(
-          opacity: _successFadeAnim.value,
-          child: Container(
-            color: Colors.black26,
-            child: Center(
-              child: Transform.scale(
-                scale: _successScaleAnim.value,
-                child: Container(
-                  margin: const EdgeInsets.symmetric(horizontal: 32),
-                  padding: const EdgeInsets.symmetric(horizontal: 48, vertical: 32),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.97),
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(color: const Color(0xFF16A34A), width: 2),
-                    boxShadow: [
-                      BoxShadow(color: Colors.black.withOpacity(0.18), blurRadius: 60, offset: const Offset(0, 20)),
-                      BoxShadow(color: const Color(0xFF16A34A).withOpacity(0.10), blurRadius: 0, spreadRadius: 6),
-                    ],
-                  ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Container(
-                        width: 72, height: 72,
-                        decoration: const BoxDecoration(color: Color(0xFFDCFCE7), shape: BoxShape.circle),
-                        child: const Icon(Icons.check, color: Color(0xFF16A34A), size: 40),
-                      ),
-                      const SizedBox(height: 14),
-                      const Text('Điểm danh thành công!',
-                          style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600, color: Color(0xFF15803D))),
-                      const SizedBox(height: 10),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFF0FDF4),
-                          border: Border.all(color: const Color(0xFFBBF7D0)),
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: Text(_successName,
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(fontSize: 14, fontFamily: 'monospace', color: Color(0xFF374151))),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ),
-        );
-      },
-    );
-  }
+  Color _statusColor() => {
+        StatusType.success: const Color(0xFF1A6640),
+        StatusType.error: const Color(0xFFB91C1C),
+        StatusType.warn: const Color(0xFF92400E),
+        StatusType.muted: const Color(0xFF888885),
+      }[_statusType]!;
 }
